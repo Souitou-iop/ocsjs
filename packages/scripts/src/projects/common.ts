@@ -10,7 +10,7 @@ import {
 } from '@ocsjs/core';
 import { $message, h, $gm, $store, Project, Script, $modal, StoreListenerType, $ui } from 'easy-us';
 import type { AnswererWrapper, SearchInformation } from '@ocsjs/core';
-import { CXProject, ICourseProject, IcveMoocProject, YKTProject, ZHSProject, ZJYProject } from '../index';
+import { CXProject, ICourseProject, IcveMoocProject, SmartEduProject, YKTProject, ZHSProject, ZJYProject } from '../index';
 import { markdown } from '../utils/markdown';
 import { enableCopy } from '../utils';
 import { SearchInfosElement } from '../elements/search.infos';
@@ -1801,7 +1801,7 @@ const createGuide = () => {
 			]),
 
 			h('div', [
-				...[CXProject, ZHSProject, ZJYProject, IcveMoocProject, ICourseProject, YKTProject].map((project) => {
+				...[CXProject, ZHSProject, ZJYProject, IcveMoocProject, ICourseProject, YKTProject, SmartEduProject].map((project) => {
 					const btn = h('button', { className: 'base-style-button-secondary', style: { margin: '4px' } }, [
 						project.name
 					]);

@@ -16,7 +16,7 @@ import {
 import semver_gt from 'semver/functions/gt';
 import semver_valid from 'semver/functions/valid';
 import { CommonProject } from './common';
-import { CXProject, definedProjects, ICourseProject, IcveMoocProject, YKTProject, ZHSProject, ZJYProject } from '..';
+import { CXProject, definedProjects, ICourseProject, IcveMoocProject, SmartEduProject, YKTProject, ZHSProject, ZJYProject } from '..';
 import { RenderScript } from '../render';
 import { SearchInfosElement } from '../elements/search.infos';
 import { $render } from '../utils/render';
@@ -945,7 +945,8 @@ export const BackgroundProject = Project.create({
 					IcveMoocProject.scripts.study,
 					IcveMoocProject.scripts.work,
 					YKTProject.scripts.ai,
-					YKTProject.scripts.v2_study
+					YKTProject.scripts.v2_study,
+					SmartEduProject.scripts.study
 				]
 					.map((m) => {
 						const url = window.location.href;
