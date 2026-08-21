@@ -13,6 +13,48 @@ const state = {
 	}
 };
 
+let audioCtx: AudioContext | null = null;
+
+/**
+ * 彻底防止浏览器休眠标签页（WebAudio 无声音频保活 + WakeLock 锁）
+ * 解决 Edge/Chrome 因视频静音将后台标签页判定为“无声闲置”而强制休眠的问题
+ */
+function keepTabAlive() {
+	try {
+		// 1. Web Audio API 无声保活（欺骗浏览器内核，使其标记此标签页正在播放音频，从而彻底免疫睡眠标签页）
+		if (!audioCtx) {
+			const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+			if (AudioContextClass) {
+				audioCtx = new AudioContextClass();
+				const oscillator = audioCtx.createOscillator();
+				const gainNode = audioCtx.createGain();
+				// 极微弱无声音频（人耳完全不可闻，但触发浏览器音频活跃标识）
+				gainNode.gain.value = 0.00001;
+				oscillator.type = 'sine';
+				oscillator.frequency.value = 440;
+				oscillator.connect(gainNode);
+				gainNode.connect(audioCtx.destination);
+				oscillator.start();
+
+				if (audioCtx.state === 'suspended') {
+					const resumeAudio = () => {
+						audioCtx?.resume();
+						window.removeEventListener('click', resumeAudio);
+					};
+					window.addEventListener('click', resumeAudio, { once: true });
+				}
+			}
+		}
+
+		// 2. Screen Wake Lock API（阻止系统与页面休眠）
+		if ('wakeLock' in navigator) {
+			(navigator as any).wakeLock?.request?.('screen')?.catch?.(() => {});
+		}
+	} catch (e) {
+		console.warn('[SmartEdu] 保活初始化失败:', e);
+	}
+}
+
 /**
  * 彻底劫持失焦与切屏暂停检测（EventTarget 拦截 + 属性欺骗 + 焦点伪造 + 捕获阻断）
  */
@@ -117,6 +159,7 @@ function hookVisibilityAndBlur() {
 
 // 模块加载时立即执行
 hookVisibilityAndBlur();
+keepTabAlive();
 
 /**
  * 展开所有折叠的课程目录
@@ -288,10 +331,13 @@ function applyMediaSettings(video: HTMLVideoElement, cfg: { playbackRate: number
  * 触发播放并保持播放
  */
 async function startAndKeepPlaying(video: HTMLVideoElement, cfg: { playbackRate: number | string; volume: number }) {
-	// 1. 设置倍速与静音
+	// 1. 触发保活
+	keepTabAlive();
+
+	// 2. 设置倍速与静音
 	applyMediaSettings(video, cfg);
 
-	// 2. 点击大播放按钮（videojs 居中大按钮）
+	// 3. 点击大播放按钮（videojs 居中大按钮）
 	const bigPlay = document.querySelector<HTMLElement>('.vjs-big-play-button, .vjs-play-control');
 	if (bigPlay && bigPlay.offsetParent !== null) {
 		try {
@@ -299,7 +345,7 @@ async function startAndKeepPlaying(video: HTMLVideoElement, cfg: { playbackRate:
 		} catch (e) {}
 	}
 
-	// 3. 调用原生 play()
+	// 4. 调用原生 play()
 	try {
 		await video.play();
 	} catch (e) {
@@ -353,6 +399,9 @@ async function watchVideo(
 
 		const intervalId = setInterval(async () => {
 			if (isDone) return;
+
+			// 持续触发音频与唤醒锁保活
+			keepTabAlive();
 
 			// 如果视频元素被替换，重新获取当前视频
 			if (!video.isConnected) {
@@ -426,9 +475,11 @@ export const SmartEduProject = Project.create({
 			},
 			onstart() {
 				hookVisibilityAndBlur();
+				keepTabAlive();
 			},
 			oncomplete() {
 				hookVisibilityAndBlur();
+				keepTabAlive();
 				CommonProject.scripts.render.methods.pin(this);
 			}
 		}),
@@ -468,9 +519,11 @@ export const SmartEduProject = Project.create({
 			},
 			onstart() {
 				hookVisibilityAndBlur();
+				keepTabAlive();
 			},
 			oncomplete() {
 				hookVisibilityAndBlur();
+				keepTabAlive();
 				CommonProject.scripts.render.methods.pin(this);
 
 				this.onConfigChange('playbackRate', (rate) => {
