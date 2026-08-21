@@ -1,13 +1,15 @@
-## [4.16.0](https://github.com/Souitou-iop/ocsjs/releases/tag/v4.16.0) (2026-08-21)
+## [4.16.0](https://github.com/Souitou-iop/ocsjs/releases/tag/v4.16.0) (2026-08-22)
 
 
 ### Features
 
 * **smartedu:** 适配国家智慧教育公共服务平台与国家中小学智慧教育平台（`smartedu.cn` / `zxx.edu.cn`）
   - 适配专题培训（`/training/*`）与教师研修课程详情页（`/teacherTraining/courseDetail`）
-  - 支持倍速播放（1.25x/1.5x/2x）与独立静音控制，联动原生视频与 videojs 播放器 UI
-  - 支持防切屏/失焦自动暂停拦截与视频播放状态保活
+  - 适配倍速播放（1.25x/1.5x/2x）与独立静音控制，双向联动原生视频与 videojs 播放器 UI 控件
+  - 接入 WebAudio 无声音频振荡器与 WakeLock 系统唤醒锁，彻底免疫 Edge/Chrome 睡眠标签页（Sleeping Tabs）与后台降频
+  - 实现四重防切屏/失焦自动暂停拦截（EventTarget 拦截、属性伪造、全局句柄清理、捕获阻断）
   - 支持视频内嵌自测弹窗与交互式题目自动作答提交
+  - 采用严格真实播放完成判定（`ended` / 末尾时间检测），彻底杜绝长视频中途误判跳过
   - 支持多章节折叠目录自动展开与小节自动连播
 
 ## [4.13.22](https://github.com/ocsjs/ocsjs/compare/4.13.19...4.13.22) (2026-06-11)
