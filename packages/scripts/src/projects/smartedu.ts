@@ -14,31 +14,109 @@ const state = {
 };
 
 /**
- * 劫持失焦与切屏暂停检测
+ * 彻底劫持失焦与切屏暂停检测（EventTarget 拦截 + 属性欺骗 + 焦点伪造 + 捕获阻断）
  */
 function hookVisibilityAndBlur() {
-	try {
-		Object.defineProperty(document, 'hidden', {
-			get: () => false,
-			configurable: true
-		});
-		Object.defineProperty(document, 'visibilityState', {
-			get: () => 'visible',
-			configurable: true
-		});
+	const win = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window) as any;
+	if (!win || win.__smartedu_hooked__) return;
+	win.__smartedu_hooked__ = true;
 
+	try {
+		const blockedEvents = [
+			'visibilitychange',
+			'webkitvisibilitychange',
+			'blur',
+			'focusout',
+			'pagehide'
+		];
+
+		// 1. 拦截 EventTarget.prototype.addEventListener 注册失焦/切屏监听
+		const targetPrototypes = [
+			win.EventTarget?.prototype,
+			win.Window?.prototype,
+			win.Document?.prototype,
+			win.HTMLDocument?.prototype
+		].filter(Boolean);
+
+		for (const proto of targetPrototypes) {
+			if (proto && proto.addEventListener) {
+				const originAdd = proto.addEventListener;
+				proto.addEventListener = function (type: string, listener: any, options: any) {
+					if (typeof type === 'string' && blockedEvents.includes(type.toLowerCase())) {
+						return;
+					}
+					return originAdd.call(this, type, listener, options);
+				};
+			}
+		}
+
+		// 2. 伪造 document.hidden 与 document.visibilityState
+		const docTargets = [
+			win.document,
+			win.Document?.prototype,
+			win.HTMLDocument?.prototype,
+			document,
+			typeof Document !== 'undefined' ? Document.prototype : null
+		].filter(Boolean);
+
+		for (const target of docTargets) {
+			try {
+				Object.defineProperty(target, 'hidden', {
+					get: () => false,
+					configurable: true
+				});
+				Object.defineProperty(target, 'visibilityState', {
+					get: () => 'visible',
+					configurable: true
+				});
+				Object.defineProperty(target, 'webkitHidden', {
+					get: () => false,
+					configurable: true
+				});
+				Object.defineProperty(target, 'webkitVisibilityState', {
+					get: () => 'visible',
+					configurable: true
+				});
+			} catch (e) {}
+		}
+
+		// 3. 伪造 document.hasFocus 始终返回 true
+		if (win.document) {
+			win.document.hasFocus = () => true;
+		}
+		if (typeof document !== 'undefined') {
+			document.hasFocus = () => true;
+		}
+
+		// 4. 清空全局 onblur 与 onvisibilitychange
+		win.onblur = null;
+		win.onpagehide = null;
+		if (win.document) {
+			win.document.onvisibilitychange = null;
+		}
+
+		// 5. 捕获阶段事件阻断（双保险）
 		const stopPropagation = (e: Event) => {
+			e.preventDefault();
+			e.stopPropagation();
 			e.stopImmediatePropagation();
 		};
 
-		window.addEventListener('visibilitychange', stopPropagation, true);
-		document.addEventListener('visibilitychange', stopPropagation, true);
-		window.addEventListener('blur', stopPropagation, true);
-		document.addEventListener('blur', stopPropagation, true);
+		for (const evt of blockedEvents) {
+			try {
+				win.addEventListener?.(evt, stopPropagation, true);
+				win.document?.addEventListener?.(evt, stopPropagation, true);
+				window.addEventListener(evt, stopPropagation, true);
+				document.addEventListener(evt, stopPropagation, true);
+			} catch (e) {}
+		}
 	} catch (e) {
 		console.warn('[SmartEdu] 劫持切屏检测失败:', e);
 	}
 }
+
+// 模块加载时立即执行
+hookVisibilityAndBlur();
 
 /**
  * 展开所有折叠的课程目录
@@ -350,6 +428,7 @@ export const SmartEduProject = Project.create({
 				hookVisibilityAndBlur();
 			},
 			oncomplete() {
+				hookVisibilityAndBlur();
 				CommonProject.scripts.render.methods.pin(this);
 			}
 		}),
@@ -391,6 +470,7 @@ export const SmartEduProject = Project.create({
 				hookVisibilityAndBlur();
 			},
 			oncomplete() {
+				hookVisibilityAndBlur();
 				CommonProject.scripts.render.methods.pin(this);
 
 				this.onConfigChange('playbackRate', (rate) => {
