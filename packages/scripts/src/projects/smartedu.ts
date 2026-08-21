@@ -16,37 +16,40 @@ const state = {
 let audioCtx: AudioContext | null = null;
 
 /**
- * 彻底防止浏览器休眠标签页（WebAudio 无声音频保活 + WakeLock 锁）
- * 解决 Edge/Chrome 因视频静音将后台标签页判定为“无声闲置”而强制休眠的问题
+ * 彻底防止浏览器休眠标签页与后台降频（WebAudio 振荡器保活 + WakeLock 锁）
  */
 function keepTabAlive() {
 	try {
-		// 1. Web Audio API 无声保活（欺骗浏览器内核，使其标记此标签页正在播放音频，从而彻底免疫睡眠标签页）
 		if (!audioCtx) {
 			const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
 			if (AudioContextClass) {
 				audioCtx = new AudioContextClass();
 				const oscillator = audioCtx.createOscillator();
 				const gainNode = audioCtx.createGain();
-				// 极微弱无声音频（人耳完全不可闻，但触发浏览器音频活跃标识）
+				// 极微弱无声音频（人耳完全不可闻，但在系统音频管线中保持活跃，赋予标签页最高后台执行权限）
 				gainNode.gain.value = 0.00001;
 				oscillator.type = 'sine';
 				oscillator.frequency.value = 440;
 				oscillator.connect(gainNode);
 				gainNode.connect(audioCtx.destination);
 				oscillator.start();
-
-				if (audioCtx.state === 'suspended') {
-					const resumeAudio = () => {
-						audioCtx?.resume();
-						window.removeEventListener('click', resumeAudio);
-					};
-					window.addEventListener('click', resumeAudio, { once: true });
-				}
 			}
 		}
 
-		// 2. Screen Wake Lock API（阻止系统与页面休眠）
+		if (audioCtx && audioCtx.state === 'suspended') {
+			audioCtx.resume().catch(() => {});
+		}
+
+		// 页面任意交互时自动激活 AudioContext
+		const resumeHandler = () => {
+			if (audioCtx && audioCtx.state === 'suspended') {
+				audioCtx.resume().catch(() => {});
+			}
+		};
+		window.addEventListener('click', resumeHandler, { once: true });
+		window.addEventListener('keydown', resumeHandler, { once: true });
+
+		// Screen Wake Lock API
 		if ('wakeLock' in navigator) {
 			(navigator as any).wakeLock?.request?.('screen')?.catch?.(() => {});
 		}
@@ -278,7 +281,7 @@ function handlePopups() {
 function applyMediaSettings(video: HTMLVideoElement, cfg: { playbackRate: number | string; volume: number }) {
 	const targetRate = parseFloat(cfg.playbackRate.toString());
 
-	// 1. 尝试直接设置 video 属性
+	// 1. 设置 video 属性
 	try {
 		video.playbackRate = targetRate;
 	} catch (e) {}
@@ -364,7 +367,7 @@ async function watchVideo(
 		volume: number;
 		autoSkipQuiz: boolean;
 	},
-	targetItem: HTMLElement
+	title: string
 ) {
 	// 等待视频出现
 	let video = (await waitForMedia({
@@ -392,8 +395,8 @@ async function watchVideo(
 			if (isDone) return;
 			isDone = true;
 			clearInterval(intervalId);
-			$message.info('当前小节播放完成，等待学时同步...');
-			await $.sleep(3000);
+			$message.info(`${title} 播放完成，正在等待学时同步...`);
+			await $.sleep(4000);
 			resolve();
 		};
 
@@ -434,18 +437,14 @@ async function watchVideo(
 				const cur = Math.floor(video.currentTime);
 				const dur = Math.floor(video.duration);
 				const pct = ((cur / dur) * 100).toFixed(1);
-				$console.info(`[SmartEdu] 播放进度: ${cur}s / ${dur}s (${pct}%)`);
+				$console.info(`[SmartEdu] ${title} 进度: ${cur}s / ${dur}s (${pct}%)`);
 			}
 
-			// 判定完成条件：
-			// 1. 原生 ended 事件
-			// 2. 播放接近末尾（剩余 <= 2秒，且已经播放了超过 3 秒）
-			// 3. 目录中的状态图标已变为已学完
-			const playedEnough = video.currentTime > 3;
-			const isNearEnd = playedEnough && video.duration > 0 && video.duration - video.currentTime <= 2;
-			const itemNowFinished = isItemFinished(targetItem);
+			// 严谨的完成条件：必须是视频自身确实播放到了结尾（剩余 <= 3秒 且已播放超过 5 秒，或者原生 ended 事件）
+			const playedEnough = video.currentTime > 5;
+			const isNearEnd = playedEnough && video.duration > 0 && video.duration - video.currentTime <= 3;
 
-			if (video.ended || isNearEnd || itemNowFinished) {
+			if (video.ended || isNearEnd) {
 				await finish();
 			}
 		}, 1000);
@@ -561,7 +560,7 @@ export const SmartEduProject = Project.create({
 								break;
 							}
 
-							// 找到当前未完成的小节（或者当前正在进行的小节）
+							// 找到当前正在进行的未完成小节，或者下一个未完成小节
 							let targetIdx = -1;
 
 							if (this.cfg.restudy) {
@@ -585,7 +584,7 @@ export const SmartEduProject = Project.create({
 							const targetItem = items[targetIdx];
 							const title = targetItem.innerText?.trim().split('\n')[0] || `第 ${targetIdx + 1} 节`;
 
-							// 如果当前小节不是正在播放的小节，点击切换
+							// 只有当目标不是当前播放项时才执行点击跳转
 							if (!isItemProcessing(targetItem)) {
 								$message.info(`正在进入小节：${title}`);
 								targetItem.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -608,9 +607,8 @@ export const SmartEduProject = Project.create({
 										volume: this.cfg.volume,
 										autoSkipQuiz: this.cfg.autoSkipQuiz
 									},
-									targetItem
+									title
 								);
-								$message.success(`${title} 播放完成`);
 							} else {
 								$message.info(`${title} 为文档/非视频资源，等待 ${this.cfg.readSpeed} 秒后继续...`);
 								await $.sleep(this.cfg.readSpeed * 1000);
