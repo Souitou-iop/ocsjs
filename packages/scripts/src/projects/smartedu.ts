@@ -59,12 +59,34 @@ function keepTabAlive() {
 }
 
 /**
- * 彻底劫持失焦与切屏暂停检测（EventTarget 拦截 + 属性欺骗 + 焦点伪造 + 捕获阻断）
+ * 彻底劫持失焦与切屏暂停检测（EventTarget 拦截 + 属性欺骗 + 焦点伪造 + 捕获阻断 + HTMLMediaElement.pause 拦截）
  */
 function hookVisibilityAndBlur() {
 	const win = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window) as any;
-	if (!win || win.__smartedu_hooked__) return;
-	win.__smartedu_hooked__ = true;
+
+	// 1. 劫持 HTMLMediaElement.prototype.pause，彻底无视页面在后台触发的自动暂停
+	try {
+		const targetMediaProto = win.HTMLMediaElement?.prototype || (typeof HTMLMediaElement !== 'undefined' ? HTMLMediaElement.prototype : null);
+		if (targetMediaProto && targetMediaProto.pause && !targetMediaProto.__smartedu_pause_hooked__) {
+			targetMediaProto.__smartedu_pause_hooked__ = true;
+			const originPause = targetMediaProto.pause;
+			targetMediaProto.pause = function () {
+				// 只有当用户显式标记手动暂停时才执行真实暂停，忽略后台/切屏失焦的自动暂停
+				if (state.study.manualPaused) {
+					return originPause.apply(this, arguments as any);
+				}
+				// 保持播放状态，返回成功空 Promise
+				return Promise.resolve();
+			};
+		}
+	} catch (e) {
+		console.warn('[SmartEdu] 劫持 pause 失败:', e);
+	}
+
+	if (win.__smartedu_hooked__) return;
+	try {
+		win.__smartedu_hooked__ = true;
+	} catch (e) {}
 
 	try {
 		const blockedEvents = [
@@ -75,7 +97,7 @@ function hookVisibilityAndBlur() {
 			'pagehide'
 		];
 
-		// 1. 拦截 EventTarget.prototype.addEventListener 注册失焦/切屏监听
+		// 2. 拦截 EventTarget.prototype.addEventListener 注册失焦/切屏监听
 		const targetPrototypes = [
 			win.EventTarget?.prototype,
 			win.Window?.prototype,
@@ -95,7 +117,7 @@ function hookVisibilityAndBlur() {
 			}
 		}
 
-		// 2. 伪造 document.hidden 与 document.visibilityState
+		// 3. 伪造 document.hidden 与 document.visibilityState
 		const docTargets = [
 			win.document,
 			win.Document?.prototype,
@@ -125,22 +147,26 @@ function hookVisibilityAndBlur() {
 			} catch (e) {}
 		}
 
-		// 3. 伪造 document.hasFocus 始终返回 true
-		if (win.document) {
-			win.document.hasFocus = () => true;
-		}
-		if (typeof document !== 'undefined') {
-			document.hasFocus = () => true;
-		}
+		// 4. 伪造 document.hasFocus 始终返回 true
+		try {
+			if (win.document) {
+				win.document.hasFocus = () => true;
+			}
+			if (typeof document !== 'undefined') {
+				document.hasFocus = () => true;
+			}
+		} catch (e) {}
 
-		// 4. 清空全局 onblur 与 onvisibilitychange
-		win.onblur = null;
-		win.onpagehide = null;
-		if (win.document) {
-			win.document.onvisibilitychange = null;
-		}
+		// 5. 清空全局 onblur 与 onvisibilitychange
+		try {
+			win.onblur = null;
+			win.onpagehide = null;
+			if (win.document) {
+				win.document.onvisibilitychange = null;
+			}
+		} catch (e) {}
 
-		// 5. 捕获阶段事件阻断（双保险）
+		// 6. 捕获阶段事件阻断（多重保险）
 		const stopPropagation = (e: Event) => {
 			e.preventDefault();
 			e.stopPropagation();
@@ -400,6 +426,17 @@ async function watchVideo(
 			resolve();
 		};
 
+		// 同步监听 pause 事件：一旦被任何第三方触发暂停，0毫秒无延时立即恢复播放！
+		const syncPauseHandler = () => {
+			if (isDone) return;
+			if (!state.study.manualPaused && !video.ended) {
+				try {
+					video.play();
+				} catch (e) {}
+			}
+		};
+		video.addEventListener('pause', syncPauseHandler);
+
 		const intervalId = setInterval(async () => {
 			if (isDone) return;
 
@@ -412,6 +449,7 @@ async function watchVideo(
 				if (newVideo) {
 					video = newVideo;
 					state.study.currentMedia = video;
+					video.addEventListener('pause', syncPauseHandler);
 					await startAndKeepPlaying(video, cfg);
 				}
 				return;
@@ -445,6 +483,7 @@ async function watchVideo(
 			const isNearEnd = playedEnough && video.duration > 0 && video.duration - video.currentTime <= 3;
 
 			if (video.ended || isNearEnd) {
+				video.removeEventListener('pause', syncPauseHandler);
 				await finish();
 			}
 		}, 1000);
