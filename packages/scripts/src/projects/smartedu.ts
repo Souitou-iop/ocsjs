@@ -257,6 +257,40 @@ function isItemProcessing(item: HTMLElement): boolean {
 }
 
 /**
+ * 安全且完整的元素点击触发器（兼容 MicroApp、React 虚拟 DOM 及冒泡）
+ */
+function safeClick(element: HTMLElement) {
+	if (!element) return;
+	try {
+		element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+	} catch (e) {}
+
+	// 1. 原生 click()
+	try {
+		element.click();
+	} catch (e) {}
+
+	// 2. 子元素 click()
+	try {
+		const child = element.firstElementChild as HTMLElement;
+		if (child && typeof child.click === 'function') {
+			child.click();
+		}
+	} catch (e) {}
+
+	// 3. 完整 MouseEvent 模拟触发
+	try {
+		const rect = element.getBoundingClientRect();
+		const clientX = rect.left + rect.width / 2;
+		const clientY = rect.top + rect.height / 2;
+		const opts: MouseEventInit = { bubbles: true, cancelable: true, view: window, clientX, clientY };
+		element.dispatchEvent(new MouseEvent('mousedown', opts));
+		element.dispatchEvent(new MouseEvent('mouseup', opts));
+		element.dispatchEvent(new MouseEvent('click', opts));
+	} catch (e) {}
+}
+
+/**
  * 处理视频中途弹出的题目或确认弹窗
  */
 function handlePopups() {
@@ -266,7 +300,7 @@ function handlePopups() {
 			'.nqti-option, .fish-radio-wrapper:not(.fish-radio-wrapper-checked), .fish-checkbox-wrapper:not(.fish-checkbox-wrapper-checked)'
 		);
 		if (options.length > 0) {
-			options[0].click();
+			safeClick(options[0]);
 		}
 
 		// 2. 填空题输入框填充占位
@@ -293,7 +327,7 @@ function handlePopups() {
 		);
 		for (const btn of Array.from(btns)) {
 			if (btn.offsetParent !== null) {
-				btn.click();
+				safeClick(btn);
 			}
 		}
 	} catch (e) {
@@ -327,7 +361,7 @@ function applyMediaSettings(video: HTMLVideoElement, cfg: { playbackRate: number
 			!muteBtn.innerText.includes('取消') &&
 			muteBtn.getAttribute('title') !== '取消静音'
 		) {
-			muteBtn.click();
+			safeClick(muteBtn);
 		}
 	} else {
 		// 如果需要有声，且当前处于静音（按钮提示“取消静音”），点击一次恢复声音
@@ -335,7 +369,7 @@ function applyMediaSettings(video: HTMLVideoElement, cfg: { playbackRate: number
 			muteBtn &&
 			(muteBtn.getAttribute('title') === '取消静音' || muteBtn.innerText.includes('取消静音'))
 		) {
-			muteBtn.click();
+			safeClick(muteBtn);
 		}
 		try {
 			video.muted = false;
@@ -352,7 +386,7 @@ function applyMediaSettings(video: HTMLVideoElement, cfg: { playbackRate: number
 		!matchedItem.className.includes('vjs-selected') &&
 		matchedItem.getAttribute('aria-checked') !== 'true'
 	) {
-		matchedItem.click();
+		safeClick(matchedItem);
 	}
 }
 
@@ -369,9 +403,7 @@ async function startAndKeepPlaying(video: HTMLVideoElement, cfg: { playbackRate:
 	// 3. 点击大播放按钮（videojs 居中大按钮）
 	const bigPlay = document.querySelector<HTMLElement>('.vjs-big-play-button, .vjs-play-control');
 	if (bigPlay && bigPlay.offsetParent !== null) {
-		try {
-			bigPlay.click();
-		} catch (e) {}
+		safeClick(bigPlay);
 	}
 
 	// 4. 调用原生 play()
@@ -599,17 +631,26 @@ export const SmartEduProject = Project.create({
 								break;
 							}
 
-							// 找到当前正在进行的未完成小节，或者下一个未完成小节
+							// 找到当前正在进行的小节索引
+							const currentActiveIdx = items.findIndex((el) => isItemProcessing(el));
+
+							// 寻找下一个应该学习的目标小节
 							let targetIdx = -1;
 
 							if (this.cfg.restudy) {
-								targetIdx = items.findIndex((el) => isItemProcessing(el));
-								if (targetIdx === -1) targetIdx = 0;
+								targetIdx = currentActiveIdx !== -1 ? currentActiveIdx : 0;
 							} else {
-								const currentActiveIdx = items.findIndex((el) => isItemProcessing(el));
-								if (currentActiveIdx !== -1 && !isItemFinished(items[currentActiveIdx])) {
-									targetIdx = currentActiveIdx;
-								} else {
+								// 1. 优先从当前正在进行的小节往后寻找第一个未学完的小节
+								if (currentActiveIdx !== -1) {
+									for (let i = currentActiveIdx; i < items.length; i++) {
+										if (!isItemFinished(items[i])) {
+											targetIdx = i;
+											break;
+										}
+									}
+								}
+								// 2. 如果往后没有未学完的，从头扫描是否有遗漏的小节
+								if (targetIdx === -1) {
 									targetIdx = items.findIndex((el) => !isItemFinished(el));
 								}
 							}
@@ -623,12 +664,28 @@ export const SmartEduProject = Project.create({
 							const targetItem = items[targetIdx];
 							const title = targetItem.innerText?.trim().split('\n')[0] || `第 ${targetIdx + 1} 节`;
 
+							// 获取当前视频元素与其源地址
+							const currentVideo = document.querySelector<HTMLVideoElement>('video');
+							const prevSrc = currentVideo ? (currentVideo.currentSrc || currentVideo.src) : '';
+
 							// 只有当目标不是当前播放项时才执行点击跳转
 							if (!isItemProcessing(targetItem)) {
 								$message.info(`正在进入小节：${title}`);
-								targetItem.scrollIntoView({ behavior: 'smooth', block: 'center' });
-								targetItem.click();
-								await $.sleep(3000);
+								safeClick(targetItem);
+
+								// 等待新视频加载与源地址切换
+								await waitFor(
+									() => {
+										const v = document.querySelector<HTMLVideoElement>('video');
+										if (!v) return false;
+										const newSrc = v.currentSrc || v.src;
+										const srcChanged = newSrc && newSrc !== prevSrc;
+										const timeReset = v.currentTime < 5 && !v.ended;
+										return srcChanged || timeReset;
+									},
+									{ timeout_seconds: 12, check_period_ms: 500 }
+								);
+								await $.sleep(2000);
 							}
 
 							$message.info(`正在学习：${title}`);
@@ -648,6 +705,20 @@ export const SmartEduProject = Project.create({
 									},
 									title
 								);
+
+								// 播放完成后，如果开启了自动下一节，主动推进到下一小节
+								if (this.cfg.autoNext) {
+									await expandAllChapters();
+									const refreshedItems = getResourceItems();
+									const nextIdx = targetIdx + 1;
+									if (nextIdx < refreshedItems.length && (this.cfg.restudy || !isItemFinished(refreshedItems[nextIdx]))) {
+										const nextItem = refreshedItems[nextIdx];
+										const nextTitle = nextItem.innerText?.trim().split('\n')[0] || `第 ${nextIdx + 1} 节`;
+										$message.info(`即将跳转到下一节：${nextTitle}`);
+										safeClick(nextItem);
+										await $.sleep(3000);
+									}
+								}
 							} else {
 								$message.info(`${title} 为文档/非视频资源，等待 ${this.cfg.readSpeed} 秒后继续...`);
 								await $.sleep(this.cfg.readSpeed * 1000);
