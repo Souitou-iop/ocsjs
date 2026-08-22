@@ -26,7 +26,6 @@ function keepTabAlive() {
 				audioCtx = new AudioContextClass();
 				const oscillator = audioCtx.createOscillator();
 				const gainNode = audioCtx.createGain();
-				// 极微弱无声音频（人耳完全不可闻，但在系统音频管线中保持活跃，赋予标签页最高后台执行权限）
 				gainNode.gain.value = 0.00001;
 				oscillator.type = 'sine';
 				oscillator.frequency.value = 440;
@@ -162,7 +161,7 @@ function hookVisibilityAndBlur() {
 			}
 		} catch (e) {}
 
-		// 6. 捕获阶段事件阻断（多重保险）
+		// 6. 捕获阶段事件阻断
 		const stopPropagation = (e: Event) => {
 			e.preventDefault();
 			e.stopPropagation();
@@ -235,9 +234,9 @@ function isItemFinished(item: HTMLElement): boolean {
 }
 
 /**
- * 安全且完整的元素点击触发器
+ * 安全切换小节点击（单次触发）
  */
-function safeClick(element: HTMLElement) {
+function clickResourceItem(element: HTMLElement) {
 	if (!element) return;
 	try {
 		element.scrollIntoView({ behavior: 'auto', block: 'nearest' });
@@ -245,23 +244,6 @@ function safeClick(element: HTMLElement) {
 
 	try {
 		element.click();
-	} catch (e) {}
-
-	try {
-		const child = element.firstElementChild as HTMLElement;
-		if (child && typeof child.click === 'function') {
-			child.click();
-		}
-	} catch (e) {}
-
-	try {
-		const rect = element.getBoundingClientRect();
-		const clientX = rect.left + rect.width / 2;
-		const clientY = rect.top + rect.height / 2;
-		const opts: MouseEventInit = { bubbles: true, cancelable: true, view: window, clientX, clientY };
-		element.dispatchEvent(new MouseEvent('mousedown', opts));
-		element.dispatchEvent(new MouseEvent('mouseup', opts));
-		element.dispatchEvent(new MouseEvent('click', opts));
 	} catch (e) {}
 }
 
@@ -274,7 +256,7 @@ function handlePopups() {
 			'.nqti-option, .fish-radio-wrapper:not(.fish-radio-wrapper-checked), .fish-checkbox-wrapper:not(.fish-checkbox-wrapper-checked)'
 		);
 		if (options.length > 0) {
-			safeClick(options[0]);
+			options[0].click();
 		}
 
 		const inputForm = document.querySelector<HTMLElement>('.index-module_box_blt8G');
@@ -299,7 +281,7 @@ function handlePopups() {
 		);
 		for (const btn of Array.from(btns)) {
 			if (btn.offsetParent !== null) {
-				safeClick(btn);
+				btn.click();
 			}
 		}
 	} catch (e) {
@@ -308,43 +290,56 @@ function handlePopups() {
 }
 
 /**
- * 应用音量与倍速设置（精准单次同步）
+ * 彻底设置音量与倍速（DOM + 原型 Setter + videojs UI 联动）
  */
 function applyMediaSettings(video: HTMLVideoElement, cfg: { playbackRate: number | string; volume: number }) {
 	const targetRate = parseFloat(cfg.playbackRate.toString());
 
+	// 1. 设置倍速
 	try {
 		video.playbackRate = targetRate;
 	} catch (e) {}
 
-	const muteBtn = document.querySelector<HTMLElement>('.vjs-mute-control');
+	// 2. 彻底静音处理
 	if (cfg.volume === 0) {
 		try {
 			video.muted = true;
 			video.volume = 0;
 		} catch (e) {}
 
+		// 通过 HTMLMediaElement 原型 setter 强行静音（穿透微前端 Proxy 拦截）
+		try {
+			const proto = HTMLMediaElement.prototype;
+			const mutedSet = Object.getOwnPropertyDescriptor(proto, 'muted')?.set;
+			const volumeSet = Object.getOwnPropertyDescriptor(proto, 'volume')?.set;
+			if (mutedSet) mutedSet.call(video, true);
+			if (volumeSet) volumeSet.call(video, 0);
+		} catch (e) {}
+
+		// 联动 videojs 静音按钮（仅在当前未静音时单次点击）
+		const muteBtn = document.querySelector<HTMLElement>('.vjs-mute-control');
 		if (
 			muteBtn &&
-			(muteBtn.getAttribute('title') === '静音' || muteBtn.innerText.includes('静音')) &&
-			!muteBtn.innerText.includes('取消') &&
-			muteBtn.getAttribute('title') !== '取消静音'
+			(muteBtn.classList.contains('vjs-vol-3') ||
+				muteBtn.classList.contains('vjs-vol-2') ||
+				muteBtn.classList.contains('vjs-vol-1') ||
+				muteBtn.getAttribute('title') === '静音')
 		) {
-			safeClick(muteBtn);
+			muteBtn.click();
 		}
 	} else {
-		if (
-			muteBtn &&
-			(muteBtn.getAttribute('title') === '取消静音' || muteBtn.innerText.includes('取消静音'))
-		) {
-			safeClick(muteBtn);
-		}
+		// 恢复音量
 		try {
 			video.muted = false;
 			video.volume = cfg.volume;
 		} catch (e) {}
+		const muteBtn = document.querySelector<HTMLElement>('.vjs-mute-control');
+		if (muteBtn && (muteBtn.classList.contains('vjs-vol-0') || muteBtn.getAttribute('title') === '取消静音')) {
+			muteBtn.click();
+		}
 	}
 
+	// 3. 联动 videojs 倍速菜单（仅在未选中目标倍速时单次点击）
 	const menuItems = Array.from(document.querySelectorAll<HTMLElement>('.vjs-playback-rate .vjs-menu-item'));
 	const targetText = `${targetRate}x`;
 	const matchedItem = menuItems.find((it) => it.textContent?.includes(targetText));
@@ -353,7 +348,7 @@ function applyMediaSettings(video: HTMLVideoElement, cfg: { playbackRate: number
 		!matchedItem.className.includes('vjs-selected') &&
 		matchedItem.getAttribute('aria-checked') !== 'true'
 	) {
-		safeClick(matchedItem);
+		matchedItem.click();
 	}
 }
 
@@ -366,7 +361,9 @@ async function startAndKeepPlaying(video: HTMLVideoElement, cfg: { playbackRate:
 
 	const bigPlay = document.querySelector<HTMLElement>('.vjs-big-play-button, .vjs-play-control');
 	if (bigPlay && bigPlay.offsetParent !== null) {
-		safeClick(bigPlay);
+		try {
+			bigPlay.click();
+		} catch (e) {}
 	}
 
 	try {
@@ -589,7 +586,6 @@ export const SmartEduProject = Project.create({
 							if (this.cfg.restudy) {
 								targetIdx = 0;
 							} else {
-								// 从第一个未学完的小节开始
 								targetIdx = items.findIndex((el) => !isItemFinished(el));
 							}
 
@@ -604,14 +600,11 @@ export const SmartEduProject = Project.create({
 
 							$message.info(`准备学习小节：${title}`);
 
-							// 记录切换前视频信息
 							const currentVideo = document.querySelector<HTMLVideoElement>('video');
 							const prevSrc = currentVideo ? (currentVideo.currentSrc || currentVideo.src) : '';
 
-							// 触发切换点击
-							safeClick(targetItem);
+							clickResourceItem(targetItem);
 
-							// 等待视频源切换与重新起播
 							await waitFor(
 								() => {
 									const v = document.querySelector<HTMLVideoElement>('video');
@@ -625,7 +618,6 @@ export const SmartEduProject = Project.create({
 							);
 							await $.sleep(1500);
 
-							// 检测页面是否有视频
 							const videoEl = await waitFor(() => document.querySelector<HTMLVideoElement>('video'), {
 								timeout_seconds: 8,
 								check_period_ms: 500
